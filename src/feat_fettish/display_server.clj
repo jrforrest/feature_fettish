@@ -46,7 +46,8 @@
                   (let [features (:top-features post)
                         cols-fn #(list (col (str "Feature #" (:feature-number %)))
                                        (col (:score %)))]
-                    (entity-section (:title post) features cols-fn)))))
+                    (entity-section (:title post) features cols-fn)))
+   posts))
 
 (defn- render-features-table
   "Renders (generates html for) the given features list as a table."
@@ -79,10 +80,6 @@
                             #(contains? word (:word-counts %))
                             (:posts post-set)))]
     (map posts-with-word all-words)))
-
-(defn- render-word-associations
-  [associations]
-  (map-to-table word-association-section associations))
 
 (def computation-status
   "Holds the status of the computation currently being performed,

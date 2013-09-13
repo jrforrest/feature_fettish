@@ -1,6 +1,7 @@
 (ns feat_fettish.dict-search
-  "Provides binary-search on the machine's words file"
-  (:import [ java.io RandomAccessFile ] ))
+  "Provides binary-search on the machine's words file
+  Requires a wordlist installed to /usr/share/dict/words"
+  (:import [ java.io RandomAccessFile ]))
 
 (def dict-file
   "Reference to an open handle on the /usr/share/dict/words file"

@@ -70,7 +70,7 @@
   (let [body (->> (:url post) slurp boilerpipe/get-text)
              word-counts (word-count/make-wordcounts body)
              post* (assoc post :word-counts word-counts)]
-    (if (> (count (:word-counts post)) 200) 
+    (if (> (count (:word-counts post*)) 200) 
       (do
         (post/save-post post*)
         post*)
@@ -85,13 +85,17 @@
           [e (prn e)]
     (binding [*out* file-writer]
       (prn \"Hello werld!\")))
+
+  todo: Extract this out to another ns
   "
   [ex-classes [ex-var & rescue-exprs] & body]
   `(try ~@body ~@(map (fn [ex] `(catch ~ex ~ex-var ~@rescue-exprs)) ex-classes)))
 
-(defn- with-body
-  "Fetches the body for the given post as a string,
-  uses boilerpipe to attempt to identify the content body,
+(defn- with-word-counts
+  "Fetches the body for the given post, and returns the post
+  with a the word counts from the fetched body.
+
+  Uses boilerpipe to attempt to identify the content body,
   but will likely return garbage for non-article pages.  Also
   does not handle multi-page articles yet.
   
@@ -102,21 +106,14 @@
   [post]
   (let [stored-post (post/get-post (:url post))]
     (if (nil? stored-post)
-      (do
-        (rescue [java.io.FileNotFoundException
-                 java.net.UnknownHostException
-                 java.io.IOException]
-                [e (log/warn (format "Fetching of %s failed: %s"
-                                     (:url post)
-                                     (.getMessage e)))]
-                (log/info (str "Fetching from web: " (:url post)))
-                (scrape-post post)))
-      (do
-        (log/info (str "Fetched from DS: " (:url post)))
-        (assoc post :word-counts (:word-counts stored-post))))))
+      ;; Letting errors occur here now so they go upstream to the worker
+      (scrape-post post)
+      (assoc post :word-counts (:word-counts stored-post)))))
 
-(defn subreddit-posts
-  "A lazy sequence of all posts from the given subreddit"
+(defn- subreddit-posts
+  "A lazy sequence of all posts from the given subreddit
+  
+  posts with empty bodies are not included."
   ([subreddit]
    (subreddit-posts subreddit (subreddit-pages subreddit)))
   ([subreddit subreddit-pages]
@@ -125,6 +122,80 @@
   ([subreddit subreddit-pages page-posts]
    (if (empty? page-posts)
      (subreddit-posts subreddit (next subreddit-pages))
-     (cons (with-body (first (remove nil? page-posts)))
+     (cons (first page-posts)
            (lazy-seq (subreddit-posts subreddit subreddit-pages
                                       (rest page-posts)))))))
+
+(defn- parallel-process-bounded
+  "Initializes a set of n-threads agents to apply the given function f to
+  each item of the given input-seq in parallel on the unbounded threadpool
+  
+  The default error handling strategy is to skip the element in the list
+  and return it, mapped to the exception which occured in processing it with
+  f to a map which is returned after the result set
+  
+  Note:  This is starting to get a little hairy.  Maybe this function
+  should get busted out into its own namespace.  I suppose I'd want to
+  re-use it elsewhere."
+  [f input-seq n-threads]
+  (let [pool (for [x (range n-threads)] (agent (list)))
+        ; The given sequence will get popped by each agent
+        ; as it consumes work, so it needs to be a ref
+        queue (ref input-seq)
+        ; Pops an item off of queue, setting queue to rest
+        q-pop (fn [] (dosync (let [x (first @queue)]
+                               (alter queue #(rest %))
+                               x)))
+
+        ; Processes the given item, either adding its output to the
+        ; given list of outputs compiled by the worker, or the error
+        ; which resulted from the attempt to the given list of errors. 
+        process-item (fn [output item errors]
+                       (try [(conj output (f item)), errors]
+                            (catch Exception e
+                              [output, (conj errors [item e])])))
+
+        ; Pops from the queue till' it's dry, returning the results
+        ; of the work in a map containing :output and :errors.  :output
+        ; is a vector of the values resulting from the processing.
+        ; :errors holds pairs of [given-value, Exception] for each failed item.
+        do-work (fn []
+                  (loop [[output errors] [(list) (list)]]
+                    (if-let [next-item (q-pop)]
+                      (recur (process-item output next-item errors))
+                      {:output output, :errors errors})))
+
+        ; Merges the results from all of the workers into one map
+        combine-results (fn []
+                          (reduce
+                            (partial merge-with concat)
+                            {:output [], :errors []}
+                            (map deref pool)))
+                          
+        ; Concats the result of do-work with an agents current state
+        run-worker (fn [b] (do-work))]
+    ; Calls run-worker on each worker, utilizing 
+    ; clojure's unbound thread-pool
+    (doseq [w pool] (send-off w run-worker))
+    ; Waits for all workers to complete
+    (doseq [w pool] (await w))
+    (prn "Done waiting on workers")
+    (combine-results)))
+
+(defn top-posts 
+  "Note: This doesn't actually gurantee it will return the 
+  requested number of posts, as those that fail will be removed
+  
+  Note: I want to figure out how to do this with a lazy sequence rather
+  than needing to keep all of these fetches in memory"
+  [subreddit n & opts]
+  (let [opts (apply hash-map opts)
+        parallel-fetch (fn [posts]
+                         (parallel-process-bounded with-word-counts posts
+                                                   (get :n-threads opts 10)))]
+    (->> subreddit
+         subreddit-posts
+         (take n)
+         parallel-fetch
+         :output
+         (remove nil?))))

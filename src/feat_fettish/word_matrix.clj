@@ -1,9 +1,16 @@
 (ns feat_fettish.word-matrix
+  "Proivides functions for creating and decomposing word matrixes for a
+  post-set into feature sets.  These features can be used to identify like
+  articles, and the word groups with which these articles were grouped.
+  
+  As non-negative matrix factorization does not require training with
+  a pre-classified corpus, this method is best used where no training
+  data is available."
   (:require [clatrix.core :as clatrix]))
 
-(defn- word-counts
+(defn- word-weights
   "Returns a sequence of counts for the given set of words within
-  the given post (using its :word-counts field)"
+  the given post (using its :word-weights field)"
   [words {weights :word-weights}]
   (if (empty? weights)
     (throw (new Exception "Weights is empty")))
@@ -27,7 +34,7 @@
       C   3     0       1
   "
   [words posts]
-  (clatrix/matrix (map #(word-counts words %) posts)))
+  (clatrix/matrix (map #(word-weights words %) posts)))
 
 (defn- square
   "Squares the given number.
@@ -37,8 +44,8 @@
   (* x x))
 
 (defn- diffcost
-  "Calculates the cost between the derived feature matrix and the original
-  data matrix
+  "Calculates the divergence between the derived feature matrix 
+  and the original data matrix
   
   This is determined by the sum of squares of the differences between
   the two given matrices."
@@ -51,7 +58,25 @@
     (reduce + 0 (flatten difference-squares))))
 
 (defn- multiplicative-update
-  [articles weights features num-features iterations]
+  "Recursively updates the given weights and features matrices
+  to attempt to create an accurate decomposition of the given
+  articles matrix.
+
+  This function calls itself recursively according to the
+  given number of iterations desired.
+  
+  When the divergence (as described by the diffcost function)
+  is zero, the articles matrix is considered perfectly decomposed
+  and the current weights and features matrices will be returned
+  without further iterations.
+  
+  The update is performed via multiplicative update rules.  I'd be
+  lying if I said I fully understand the linear algebra behind this algorithm.
+
+  See http://sig.umd.edu/publications/Tjoa_ICASSP2_201003.pdf."
+  [articles weights features iterations]
+  (prn weights)
+  (prn features)
   (let [synthetic-articles (clatrix/* weights features)
         cost (diffcost articles synthetic-articles)
         next-iter (- iterations 1)]
@@ -66,7 +91,7 @@
             wn (clatrix/* articles transposed-features)
             wd (clatrix/* weights features transposed-features)
             new-weights (clatrix/div (clatrix/mult weights wn) wd)]
-        (recur articles new-weights new-features num-features next-iter)))))
+        (recur articles new-weights new-features next-iter)))))
 
 (defn- rand-matrix
   "Populate a matrix with random floats between 0 and 1"
@@ -77,21 +102,56 @@
 
 (defn- factorize-articles-matrix
   "Factors the given articles matrix, extracting the given number of features
-  using the given number of iterations"
+  using the given number of iterations
+  
+  Random weights and features matrixes are created.  These matrixes may be
+  multiplied together to attempt to recreate the original articles matrix.
+  
+  The features matrix contains a row for each feature, and a column for
+  each word.  This maps each feature onto a weight for each word within
+  the corpus.
+  
+  The weights matrix has a row for each article and a column for each
+  post.  This maps each post onto a weight for each feature described
+  in the features matrix.
+  
+  These two matrices are iteratively updated using multiplicative update
+  rules, using the given number of iterations.  The fully updated weights and
+  features matrixes are returned."
   [articles num-features iterations]
   (let [[dm-rows dm-cols] (clatrix/size articles)
         weights (rand-matrix dm-rows num-features)
-        ; the last row of this matrix is ending up as all zeros.  Why?
         features (rand-matrix num-features dm-cols)]
-    (multiplicative-update articles weights features num-features iterations)))
+    (multiplicative-update articles weights features iterations)))
     
+(defn- all-valid-words
+  "Because we're using TF-IDF to weight words now, some words will have
+  a weight of 0 despite occuring in the all words list.  A word which
+  occurs in the articles matrix but never has a score above 0 will cause
+  issues in the NMF algorithm.
+
+  This function should be used to generate a list of words from the given
+  post-set which have at least one score above zero in the set
+  
+  note: This should probably get moved into the post-set ns"
+  [{posts :posts}]
+  (->> posts
+       (map :word-weights)
+       (reduce #(merge-with max %1 %2) (hash-map))
+       (reduce
+         (fn [valid-words word-weighting]
+           (if (> (val word-weighting) 0)
+             (conj valid-words (key word-weighting))
+             valid-words))
+         (hash-set))))
+
 (defn- make-data-matrix
   "Creates a data matrix with all of the words in the given
   sequence of posts
   
   TODO: This should think the words out to a moderated set"
   [post-set]
-  (let [words (keys (:total-wordcounts post-set))]
+  (let [words (all-valid-words post-set)]
     (form-matrix words (:posts post-set))))
 
 (defn- feature-weights
@@ -121,7 +181,7 @@
   matrix"
   [features post-set]
   (let [rows (clatrix/as-vec features)
-        all-words (keys (:total-wordcounts post-set))]
+        all-words (all-valid-words post-set)]
     (map (fn [row]
            (take 2 (sort
                      (comparator #(> (:weight %) (:weight %2)))
@@ -155,4 +215,3 @@
         (assoc :posts (map #(assoc %1 :top-features %2 )
                            (:posts post-set)
                            (top-post-features weights post-set))))))
-

@@ -20,7 +20,11 @@
   from the word-counts keys to a weight for the word, generated using
   tf-idf"
   (let [make-word-weights (fn [post]
-                            (reduce #(assoc %1 %2 (tf/tf-idf %2 post post-set))
+                            (reduce (fn [word-scores word]
+                                      (let [score (tf/tf-idf word post post-set)]
+                                        (if (> score 0)
+                                          (assoc word-scores word score)
+                                          word-scores)))
                                     (hash-map) 
                                     (keys (:word-counts post))))
         add-weights (fn [post]
@@ -44,14 +48,13 @@
   "Makes a post set with the given name for the given sequence of posts.
   Excludes those posts with empty word-counts"
   [set-name posts]
-  (let [pry (fn [x] (prn x) x)]
-    (-> {:name set-name, :posts posts}
-        recalc-counts
-        moderate-word-counts
-        remove-empty-posts
-        recalc-counts
-        add-word-weights
-        pry)))
+  (-> {:name set-name, :posts posts}
+      recalc-counts
+      moderate-word-counts
+      remove-empty-posts
+      #(do (prn %) %)
+      recalc-counts
+      add-word-weights))
 
 (defn add-post
   "Adds the given post to this post-set.

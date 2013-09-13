@@ -1,7 +1,6 @@
 (defproject feat_fettish "0.0.1-INITIAL"
   :description "Feature identification for Reddit articles"
-  :dependencies [
-                 [org.clojure/clojure "1.5.0"]
+  :dependencies [[org.clojure/clojure "1.5.0"]
                  [clj-http "0.5.5"]
                  [enlive "1.1.1"]
                  [io.curtis/boilerpipe-clj "0.2.0"]
