@@ -138,7 +138,12 @@
   should get busted out into its own namespace.  I suppose I'd want to
   re-use it elsewhere."
   [f input-seq n-threads]
-  (let [pool (for [x (range n-threads)] (agent (list)))
+  (let [err-log (ref (list))
+        make-worker #(agent (list)
+                           :error-mode :continue
+                           :error-handler (fn [agent err]
+                                            (dosync alter err-log conj err)))
+        pool (for [x (range n-threads)] (make-worker))
         ; The given sequence will get popped by each agent
         ; as it consumes work, so it needs to be a ref
         queue (ref input-seq)
@@ -147,31 +152,21 @@
                                (alter queue #(rest %))
                                x)))
 
-        ; Processes the given item, either adding its output to the
-        ; given list of outputs compiled by the worker, or the error
-        ; which resulted from the attempt to the given list of errors. 
-        process-item (fn [output item errors]
-                       (try [(conj output (f item)), errors]
-                            (catch Exception e
-                              [output, (conj errors [item e])])))
+        output (ref (list))
+        ; Appends the given item to the output
+        output-push (fn [item] 
+                      (dosync (alter output conj item)))
 
         ; Pops from the queue till' it's dry, returning the results
         ; of the work in a map containing :output and :errors.  :output
         ; is a vector of the values resulting from the processing.
         ; :errors holds pairs of [given-value, Exception] for each failed item.
         do-work (fn []
-                  (loop [[output errors] [(list) (list)]]
+                  (loop []
                     (if-let [next-item (q-pop)]
-                      (recur (process-item output next-item errors))
-                      {:output output, :errors errors})))
-
-        ; Merges the results from all of the workers into one map
-        combine-results (fn []
-                          (reduce
-                            (partial merge-with concat)
-                            {:output [], :errors []}
-                            (map deref pool)))
-                          
+                      (do
+                        (output-push (f next-item))
+                        (recur)))))
         ; Concats the result of do-work with an agents current state
         run-worker (fn [b] (do-work))]
     ; Calls run-worker on each worker, utilizing 
@@ -179,8 +174,7 @@
     (doseq [w pool] (send-off w run-worker))
     ; Waits for all workers to complete
     (doseq [w pool] (await w))
-    (prn "Done waiting on workers")
-    (combine-results)))
+    @output))
 
 (defn top-posts 
   "Note: This doesn't actually gurantee it will return the 
@@ -192,10 +186,10 @@
   (let [opts (apply hash-map opts)
         parallel-fetch (fn [posts]
                          (parallel-process-bounded with-word-counts posts
-                                                   (get :n-threads opts 10)))]
+                                                   (get :n-threads opts 10)))
+        prnit (fn [x] (prn x) x)]
     (->> subreddit
          subreddit-posts
          (take n)
          parallel-fetch
-         :output
          (remove nil?))))

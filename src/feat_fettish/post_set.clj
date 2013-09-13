@@ -50,9 +50,7 @@
   [set-name posts]
   (-> {:name set-name, :posts posts}
       recalc-counts
-      moderate-word-counts
       remove-empty-posts
-      #(do (prn %) %)
       recalc-counts
       add-word-weights))
 
