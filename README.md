@@ -1,4 +1,4 @@
-# Feat Fettish
+# NMF Features
 
 This is a quick and dirty research project in using tf-idf as a wieghting heuristic in an NMF textual feature identification engine.
 
